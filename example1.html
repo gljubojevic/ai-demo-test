@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Example 1 vibe demo</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Manufacturing+Consent&family=Orbitron:wght@400..900&display=swap');
+    html, body { margin: 0; padding: 0; overflow: hidden; background: #050508; }
+    canvas { display: block; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+      "opentype": "https://esm.sh/opentype.js@1.3.4"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import opentype from 'opentype';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+// ---------- Scene, camera, renderer ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x050508);
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
+// Camera is INSIDE the sphere of cubes (sphere radius 9), looking toward the
+// sphere center. The YZ text circle passes directly in front of the camera.
+camera.position.set(0, 1.0, 6.5);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+document.body.appendChild(renderer.domElement);
+
+// Environment map so the metallic material has real reflections
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+// ---------- Standard mouse camera controls ----------
+// Left-drag orbits around the sphere center, mouse wheel zooms, right-drag pans.
+// Distance is clamped so the camera stays inside the cube sphere (radius 9).
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 2;
+controls.maxDistance = 8.5;
+controls.update();
+const camDir = new THREE.Vector3();
+
+// ---------- Light source behind the camera ----------
+// Positioned on the far side of the camera, so it illuminates all cubes in the scene.
+const keyLight = new THREE.PointLight(0xfff0e0, 500, 0, 2);
+keyLight.position.set(0, 2.5, 11);
+scene.add(keyLight);
+// Dedicated cool shine light for the center title, positioned in front of it
+const centerShineLight = new THREE.PointLight(0xffffff, 800, 25, 2);
+centerShineLight.position.set(0, 4, 8);
+scene.add(centerShineLight);
+// Faint fill so the far side of the shell isn't pitch black
+scene.add(new THREE.AmbientLight(0x1a0608, 1.5));
+
+// ---------- Sphere shell of 1000 rounded cubes ----------
+const R = 9;              // sphere radius (sphere itself is NOT drawn as a primitive)
+const N = 1000;           // number of cubes
+const cubeGroup = new THREE.Group();
+
+const cubeGeo = new RoundedBoxGeometry(0.8, 0.8, 0.8, 4, 0.16);
+const cubeMat = new THREE.MeshStandardMaterial({
+  color: 0x7a0f12,        // dark red
+  metalness: 1.0,
+  roughness: 0.28,
+  envMapIntensity: 1.4
+});
+
+const cubes = [];
+// Even distribution over the sphere surface: Fibonacci sphere sampling
+const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+for (let i = 0; i < N; i++) {
+  const y = 1 - (i / (N - 1)) * 2;            // -1 .. 1
+  const r = Math.sqrt(1 - y * y);
+  const phi = i * goldenAngle;
+  const x = Math.cos(phi) * r;
+  const z = Math.sin(phi) * r;
+
+  const cube = new THREE.Mesh(cubeGeo, cubeMat);
+  cube.position.set(x * R, y * R, z * R);
+  cube.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+  // Each cube spins around all 3 axes at its own random speed
+  cube.userData.spin = new THREE.Vector3(
+    0.15 + Math.random() * 1.6,
+    0.15 + Math.random() * 1.6,
+    0.15 + Math.random() * 1.6
+  );
+  cubeGroup.add(cube);
+  cubes.push(cube);
+}
+scene.add(cubeGroup);
+
+// ---------- 3D scrolling text at the sphere center, in front of the camera ----------
+// Characters are laid out along a circular path and the whole text rotates
+// around that circle, so the text scrolls along the path.
+const textGroup = new THREE.Group();
+scene.add(textGroup);
+
+// ---------- Large center title "Cyberlabs" ----------
+// Metallic gray, reflective, slowly rotating around Y in the opposite
+// direction of the scroll text, same Orbitron font.
+const centerGroup = new THREE.Group();
+scene.add(centerGroup);
+
+// ---------- Two rotating rings around the center title ----------
+// Flat annulus bands with a dimmer, darker semi-transparent (opacity 0.8)
+// FILLED green material (no wireframe) whose glow flickers rapidly and
+// unevenly; each ring group rotates around two axes at its own speed. The
+// rings are sized so the inner radius exceeds the center title (radii
+// 5.43–5.45 and 6.43–6.45, plates pass outside the scroll circle at radius
+// 4.5), as very thin radial bands (band width 0.02) on deep plates (depth 0.56).
+function annulusGeometry(outerR, innerR, depth) {
+  const shape = new THREE.Shape();
+  shape.absarc(0, 0, outerR, 0, Math.PI * 2, false);
+  const hole = new THREE.Path();
+  hole.absarc(0, 0, innerR, 0, Math.PI * 2, true);
+  shape.holes.push(hole);
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: depth, bevelEnabled: false, curveSegments: 96
+  });
+  geo.translate(0, 0, -depth / 2);  // centered on its own plane
+  return geo;
+}
+const ringMat = new THREE.MeshStandardMaterial({
+  color: 0x16773a,          // darker, dimmer green
+  emissive: 0x118632,       // darker, dimmer glowing green (picked up by the bloom pass)
+  emissiveIntensity: 0.4,   // recomputed every frame for the rapid uneven flicker
+  roughness: 0.25,
+  metalness: 0.2,
+  side: THREE.DoubleSide,   // visible from both sides of the band
+  transparent: true,
+  opacity: 0.8,             // semi-transparent
+  wireframe: false          // filled solid band (wireframe removed)
+});
+const ringGroup1 = new THREE.Group();
+const ringGroup2 = new THREE.Group();
+scene.add(ringGroup1);
+scene.add(ringGroup2);
+// Very thin radial bands (0.02 wide) on deep plates (depth 0.56), sized so the
+// inner radius is bigger than the center title (ink half-width ~4.4 measured
+// from the Orbitron path), i.e. rings encircle outside the center text.
+// ONE shared material for both rings so the glow flickers in sync.
+const ring1 = new THREE.Mesh(annulusGeometry(5.45, 5.43, 0.56), ringMat);
+const ring2 = new THREE.Mesh(annulusGeometry(6.45, 6.43, 0.56), ringMat);
+ring1.userData.bloom = true;  // tagged for selective bloom
+ring2.userData.bloom = true;
+ringGroup1.add(ring1);
+ringGroup2.add(ring2);
+ringGroup1.rotation.set(0, 0, 0);         // ring in XY plane around the title
+ringGroup2.rotation.set(Math.PI / 3, 0, 0); // tilted start so rings differ
+
+// ---------- Ring glow post-processing (selective bloom) ----------
+// A bloom composer renders the scene with every NON-bloom mesh temporarily
+// replaced by a black material, so only the tagged rings glow; the bloom
+// texture is then composited over the normal scene render by a final
+// composer. OutputPass applies tone mapping / sRGB encoding on the final image.
+const bloomRenderPass = new RenderPass(scene, camera);
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight), 0.2, 0.3, 0.85);
+const bloomComposer = new EffectComposer(renderer);
+bloomComposer.renderToScreen = false;
+bloomComposer.addPass(bloomRenderPass);
+bloomComposer.addPass(bloomPass);
+
+const finalPass = new ShaderPass(
+  new THREE.ShaderMaterial({
+    uniforms: {
+      baseTexture: { value: null },
+      bloomTexture: { value: bloomComposer.renderTarget2.texture }
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec2 vUv;
+      uniform sampler2D baseTexture;
+      uniform sampler2D bloomTexture;
+      void main() {
+        gl_FragColor = texture2D(baseTexture, vUv) + texture2D(bloomTexture, vUv);
+      }
+    `
+  }), 'baseTexture');
+finalPass.needsSwap = true;
+const finalComposer = new EffectComposer(renderer);
+finalComposer.addPass(bloomRenderPass);
+finalComposer.addPass(finalPass);
+finalComposer.addPass(new OutputPass());
+
+const darkMaterial = new THREE.MeshBasicMaterial({ color: 0x000000 });
+const savedMaterials = {};
+function darkenNonBloomed(obj) {
+  if (obj.isMesh && !obj.userData.bloom) {
+    savedMaterials[obj.uuid] = obj.material;
+    obj.material = darkMaterial;
+  }
+}
+function restoreBloomMaterials(obj) {
+  if (savedMaterials[obj.uuid]) {
+    obj.material = savedMaterials[obj.uuid];
+    delete savedMaterials[obj.uuid];
+  }
+}
+
+const text = 'Example 1 vibe demo that shows what might be possible using local LLM and limited amount of time to show usable result.. ';
+const textRadius = 4.5;
+const charSpacing = 0.005; // uniform extra gap between glyphs (rad)
+const scrollSpeed = 0.25; // rad/s along the circle (slowed 2x again)
+const textMeshes = [];
+const glyphAngles = []; // angular coordinate of each glyph along the text (rad)
+let totalAngle = 0;     // cycle length = text angular span
+let entryAngle = 0;     // scroll offset: a glyph "enters" the circle at p = 2π
+let textSpan = 0;       // angular length of the text alone
+// Entered-letter tracking (no invisible lead glyphs): a glyph counts as entered
+// once its position passes the entry boundary p = 2π at the far point. Glyph
+// angles ascend with index, so entered letters are a prefix of the queue and
+// enter one by one in reading order. lettersEntered counts how many have
+// entered; at t = 0 none have, so the circle is empty only at the beginning.
+let lettersEntered = 0;
+// When the LAST letter enters (lettersEntered reaches the glyph count), the
+// stream begins repeating from the beginning: the cycle renormalizes to the
+// text span, so the first letter follows the last one continuously.
+let streamSwitched = false;
+const upVec = new THREE.Vector3(0, 1, 0);
+const dir = new THREE.Vector3();
+const crossZ = new THREE.Vector3();
+const tangentMat = new THREE.Matrix4();
+const textMat = new THREE.MeshStandardMaterial({
+  color: 0x1a4fd6,        // bright blue
+  metalness: 1.0,
+  roughness: 0.15,        // sharper for visible cube reflections
+  emissive: 0x0a1c4a,
+  emissiveIntensity: 0.5,
+  envMapIntensity: 2.0
+});
+
+// ---------- Cube camera for cube reflections on the scroll text ----------
+// A CubeCamera sits at the sphere center (where the text circle is centered)
+// and renders the scene — the 1000 dark-red cubes and the center title — into
+// a cubemap. That cubemap is the text material's envMap, so the metallic
+// glyphs reflect the actual cubes around them, not just the generic room map.
+const cubeRenderTarget = new THREE.WebGLCubeRenderTarget(1024, {
+  format: THREE.RGBAFormat,
+  generateMipmaps: true,
+  minFilter: THREE.LinearMipmapLinearFilter
+});
+const cubeCam = new THREE.CubeCamera(0.1, 60, cubeRenderTarget);
+cubeCam.position.set(0, 0, 0);
+scene.add(cubeCam);
+textMat.envMap = cubeRenderTarget.texture;  // overrides scene.environment for text
+let cubeCamFrame = 0;  // refresh counter (see animation loop)
+
+// ---------- Second cube camera for the center title reflections ----------
+// Captures the scene WITH the scroll text visible and the title itself hidden,
+// so the chrome letters reflect the cube shell AND the scrolling glyphs live.
+const cubeRenderTargetTitle = new THREE.WebGLCubeRenderTarget(1024, {
+  format: THREE.RGBAFormat,
+  generateMipmaps: true,
+  minFilter: THREE.LinearMipmapLinearFilter
+});
+const cubeCamTitle = new THREE.CubeCamera(0.1, 60, cubeRenderTargetTitle);
+cubeCamTitle.position.set(0, 0, 0);
+scene.add(cubeCamTitle);
+
+// Google Font: Orbitron (https://fonts.googleapis.com/css2?family=Orbitron).
+// 3D extruded glyphs need font outlines, so the Orbitron TTF is loaded via
+// opentype.js and each glyph is extruded with ExtrudeGeometry (beveled).
+// Rendered at a higher weight (700) via the font's wght variation axis.
+const GLYPH_SIZE = 0.5;
+const WEIGHT = 700;
+const varOpts = { variations: { wght: WEIGHT } };
+const FONT_URL = 'https://raw.githubusercontent.com/google/fonts/main/ofl/orbitron/Orbitron%5Bwght%5D.ttf';
+
+// Convert an opentype path (glyph outline) into THREE Shapes, registering
+// inner contours (glyph counters: holes of 'o', 'e', 'a', 'p', ...) as holes
+// of their enclosing contour, so they are NOT extruded as filled discs.
+function pathToShapes(path) {
+  // Flatten curve commands into contour point lists (closed contours).
+  const contours = [];
+  const steps = 6;
+  let pts = null;
+  for (const c of path.commands) {
+    if (c.type === 'M') { pts = [[c.x, c.y]]; }
+    else if (c.type === 'L' && pts) { pts.push([c.x, c.y]); }
+    else if (c.type === 'Q' && pts) {
+      const [x0, y0] = pts[pts.length - 1];
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps, mt = 1 - t;
+        pts.push([mt * mt * x0 + 2 * mt * t * c.x1 + t * t * c.x,
+                  mt * mt * y0 + 2 * mt * t * c.y1 + t * t * c.y]);
+      }
+    }
+    else if (c.type === 'C' && pts) {
+      const [x0, y0] = pts[pts.length - 1];
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps, mt = 1 - t;
+        pts.push([mt * mt * mt * x0 + 3 * mt * mt * t * c.x1 + 3 * mt * t * t * c.x2 + t * t * t * c.x,
+                  mt * mt * mt * y0 + 3 * mt * mt * t * c.y1 + 3 * mt * t * t * c.y2 + t * t * t * c.y]);
+      }
+    }
+    else if (c.type === 'Z' && pts) { contours.push(pts); pts = null; }
+  }
+
+  // Contour areas (shoelace formula).
+  const area = contours.map((c) => {
+    let a = 0;
+    for (let i = 0; i < c.length; i++) {
+      const [x1, y1] = c[i], [x2, y2] = c[(i + 1) % c.length];
+      a += x1 * y2 - x2 * y1;
+    }
+    return Math.abs(a) / 2;
+  });
+
+  // parent[i] = index of the smallest contour strictly containing contour i.
+  const parent = contours.map((c, i) => {
+    let best = -1;
+    for (let j = 0; j < contours.length; j++) {
+      if (j === i || area[j] <= area[i]) continue;
+      // ray-cast point-in-polygon test on the first point of contour i
+      let inside = false;
+      const poly = contours[j];
+      for (let k = 0, m = poly.length - 1; k < poly.length; m = k++) {
+        const [xk, yk] = poly[k], [xm, ym] = poly[m];
+        if ((yk > c[0][1]) !== (ym > c[0][1]) &&
+            c[0][0] < (xm - xk) * (c[0][1] - yk) / (ym - yk) + xk) inside = !inside;
+      }
+      if (inside && (best === -1 || area[j] < area[best])) best = j;
+    }
+    return best;
+  });
+
+  const shapes = contours.map((c) => {
+    const s = new THREE.Shape();
+    s.moveTo(c[0][0], c[0][1]);
+    for (let k = 1; k < c.length; k++) s.lineTo(c[k][0], c[k][1]);
+    s.closePath();
+    return s;
+  });
+  const roots = [];
+  for (let i = 0; i < contours.length; i++) {
+    if (parent[i] === -1) roots.push(i);
+    else shapes[parent[i]].holes.push(shapes[i]);  // inner contour is a hole
+  }
+  return roots.map((i) => shapes[i]);
+}
+
+// Subdivide the extruded front/back cap faces (triangles with normal ±Z) into
+// finer triangles; side/bevel triangles are kept as-is. More vertices on the
+// flat faces let reflections read more visibly across the caps, and merged
+// smooth normals make the bevel chrome show sweeping reflection gradients.
+function subdivideCapFaces(geo, iterations) {
+  const pos = geo.attributes.position.array;
+  const sides = [];
+  let caps = [];
+  for (let i = 0; i < pos.length; i += 9) {
+    const a = [pos[i], pos[i + 1], pos[i + 2]];
+    const b = [pos[i + 3], pos[i + 4], pos[i + 5]];
+    const c = [pos[i + 6], pos[i + 7], pos[i + 8]];
+    const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    const cx = u[1] * v[2] - u[2] * v[1];
+    const cy = u[2] * v[0] - u[0] * v[2];
+    const cz = u[0] * v[1] - u[1] * v[0];
+    const len = Math.hypot(cx, cy, cz);
+    if (len < 1e-12) continue;  // degenerate triangle, drop it
+    if (Math.abs(cz) / len > 0.99) caps.push([a, b, c]);
+    else sides.push([a, b, c]);
+  }
+  for (let k = 0; k < iterations; k++) {
+    const next = [];
+    for (const [a, b, c] of caps) {
+      const ab = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+      const bc = [(b[0] + c[0]) / 2, (b[1] + c[1]) / 2, (b[2] + c[2]) / 2];
+      const ac = [(a[0] + c[0]) / 2, (a[1] + c[1]) / 2, (a[2] + c[2]) / 2];
+      next.push([a, ab, ac], [ab, b, bc], [ac, bc, c], [ab, bc, ac]);
+    }
+    caps = next;
+  }
+  const all = sides.concat(caps);
+  const arr = new Float32Array(all.length * 9);
+  let j = 0;
+  for (const t of all) {
+    for (const p of t) { arr[j++] = p[0]; arr[j++] = p[1]; arr[j++] = p[2]; }
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+  return out;
+}
+
+fetch(FONT_URL)
+  .then((r) => r.arrayBuffer())
+  .then((buf) => {
+    const font = opentype.parse(buf);
+
+    // Proportional spacing: place glyphs using the font's advance widths
+    // (scaled to the glyph size at the selected weight), so narrow glyphs
+    // get narrow spacing and wide glyphs get wide spacing.
+    const advOf = (ch) => font.getAdvanceWidth(ch, GLYPH_SIZE, varOpts);
+    // Angular span of a string (advance-based, spaces included, charSpacing
+    // added after each visible glyph).
+    const spanOf = (str) => {
+      let a = 0;
+      for (const c of str) {
+        a += advOf(c) / textRadius;
+        if (c !== ' ') a += charSpacing;
+      }
+      return a;
+    };
+
+    // Empty start WITHOUT invisible lead glyphs: glyphs are laid out from angle
+    // 0, and entryAngle starts just past the entry boundary (p = 2π + gap) so
+    // the first letter starts off-circle. Nothing has entered at t = 0, so the
+    // circle is empty; letters enter one by one at the far point as entryAngle
+    // decreases past each glyph's angle.
+    const SPACE_SCALE = 1.5;  // space character is 1.5x its font advance width
+    let angle = 0;
+    for (const ch of text) {
+      const adv = advOf(ch);
+      const a = adv / textRadius;  // angular advance of this glyph
+      if (ch === ' ') { angle += a * SPACE_SCALE; continue; }  // spaces advance 1.5x, no mesh
+      const path = font.getPath(ch, 0, 0, GLYPH_SIZE, varOpts);
+      const geo = new THREE.ExtrudeGeometry(pathToShapes(path), {
+        depth: 0.15,
+        bevelEnabled: true,
+        bevelThickness: 0.02,
+        bevelSize: 0.01,
+        bevelSegments: 2,
+        curveSegments: 6
+      });
+      // opentype paths are in canvas coordinates (y down), so rotate 180°
+      // around X: flips glyphs upright in THREE coords (they were upside-down)
+      // and moves the extruded readable face to local +Z, pointing outward.
+      geo.rotateX(Math.PI);
+      // Same front/back subdivision as the center title: cap triangles
+      // subdivided 3 times, vertices merged, smooth vertex normals →
+      // reflections sweep as gradients across the letter faces.
+      const geoSub = subdivideCapFaces(geo, 3);
+      const geoFinal = mergeVertices(geoSub);
+      geoFinal.computeVertexNormals();
+      geoFinal.computeBoundingBox();
+      const bb = geoFinal.boundingBox;
+      const w = bb.max.x - bb.min.x;
+      // Center the glyph ink within its advance slot, so the font's side
+      // bearings don't add extra visible gaps between glyphs.
+      geoFinal.translate(-(bb.min.x + w / 2), 0, 0);
+
+      const midAngle = angle + a / 2;
+      const mesh = new THREE.Mesh(geoFinal, textMat);
+      mesh.visible = false;  // starts off-circle; animation places glyphs on the path
+      textMeshes.push(mesh);
+      glyphAngles.push(midAngle);
+      textGroup.add(mesh);
+      angle = midAngle + a / 2 + charSpacing;
+    }
+    textSpan = angle;                      // angular length of the text
+    totalAngle = textSpan;                 // cycle length = text span
+    // Start: the first glyph sits just outside the entry boundary (p = 2π +
+    // gap), so at t = 0 no letter has entered and the circle is empty.
+    entryAngle = Math.PI * 2 + glyphAngles[0] + charSpacing;
+    lettersEntered = 0;
+    streamSwitched = false;
+    textGroup.position.set(0, 0, 0);       // at the sphere center
+
+    // Center title glyphs: same Orbitron font, bigger than the scroll glyphs,
+    // laid out by opentype as ONE string path so every glyph sits on the same
+    // baseline, then extruded as a SINGLE mesh (not per-glyph meshes).
+    const centerText = 'Cyberlabs';
+    const centerSize = 1.55;  // bigger, bulkier title letters
+    // Center title renders at the boldest Orbitron weight (wght 900) — thicker
+    // strokes than the scroll glyphs (wght 700).
+    const centerOpts = { variations: { wght: 900 } };
+    const centerMat = new THREE.MeshStandardMaterial({
+      color: 0xbcc0cb,       // chrome, a bit darker
+      metalness: 0.9,        // more metal → darker diffuse body
+      roughness: 0.05,       // sharper mirror reflections
+      envMapIntensity: 3.0,
+      emissive: 0x101018,    // faint self-light
+      emissiveIntensity: 0.3,
+      envMap: cubeRenderTargetTitle.texture  // cubes + scroll text, captured live
+    });
+    // Total advance width of the string (opentype handles kerning/spacing),
+    // centered horizontally on the baseline y = 0.
+    const centerW = font.getAdvanceWidth(centerText, centerSize, centerOpts);
+    const centerPath = font.getPath(centerText, -centerW / 2, 0, centerSize, centerOpts);
+    const centerGeo = new THREE.ExtrudeGeometry(pathToShapes(centerPath), {
+      depth: 0.35,
+      bevelEnabled: true,
+      bevelThickness: 0.08,
+      bevelSize: 0.045,      // thicker bevel expands strokes → bulkier, bolder letters
+      bevelSegments: 3,
+      curveSegments: 8
+    });
+    centerGeo.rotateX(Math.PI);  // canvas y-down → upright, readable face at +Z
+    // Front/back faces subdivided into finer triangles, vertices merged with
+    // smooth normals → more surface detail on the caps and sweeping
+    // reflection gradients on the chrome, making reflections more visible.
+    const centerGeoSub = subdivideCapFaces(centerGeo, 3);
+    const centerGeoFinal = mergeVertices(centerGeoSub);
+    centerGeoFinal.computeVertexNormals();
+    centerGeoFinal.computeBoundingBox();
+    const cbb = centerGeoFinal.boundingBox;
+    // Center the whole title's ink on the origin (x, y and depth z). The y
+    // centering applies to the single mesh, so all glyph baselines stay aligned.
+    centerGeoFinal.translate(-(cbb.min.x + (cbb.max.x - cbb.min.x) / 2),
+                        -(cbb.min.y + (cbb.max.y - cbb.min.y) / 2),
+                        -(cbb.min.z + (cbb.max.z - cbb.min.z) / 2));
+    const centerMesh = new THREE.Mesh(centerGeoFinal, centerMat);
+    centerGroup.add(centerMesh);
+  });
+
+// ---------- Animation ----------
+const clock = new THREE.Clock();
+let ringFlickerT = 0;  // accumulated time for the ring glow flicker
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  // Whole sphere rotates around all 3 axes
+  cubeGroup.rotation.x += 0.12 * dt;
+  cubeGroup.rotation.y += 0.17 * dt;
+  cubeGroup.rotation.z += 0.09 * dt;
+
+  // Each cube rotates around all 3 axes at its own speed
+  for (const cube of cubes) {
+    const s = cube.userData.spin;
+    cube.rotation.x += s.x * dt;
+    cube.rotation.y += s.y * dt;
+    cube.rotation.z += s.z * dt;
+  }
+
+  // Refresh the cube reflection cubemap every 6 frames: hide the scroll text
+  // during the capture so the glyphs don't bake themselves into their own
+  // reflections. The cubemap sits at the sphere center, so the metallic glyphs
+  // mirror the (rotating) cube shell live.
+  cubeCamFrame++;
+  if (cubeCamFrame % 2 === 0) {
+    // Text cubemap: hide the scroll glyphs so they don't bake into their own
+    // reflections (cubes + title are captured).
+    textGroup.visible = false;
+    cubeCam.update(renderer, scene);
+    textGroup.visible = true;
+    // Title cubemap: hide the title so it doesn't bake into its own
+    // reflections (cubes + the visible scroll glyphs are captured).
+    centerGroup.visible = false;
+    cubeCamTitle.update(renderer, scene);
+    centerGroup.visible = true;
+  }
+
+  // Text scroll: horizontal circle in the XZ plane (rotation axis Y),
+  // moving right-to-left at the near point in front of the camera.
+  // Glyphs enter at the far point (0, 0, -R), travel one full circle, then
+  // exit at the entry point. The text queue is longer than the circumference,
+  // so not all glyphs are on the circle at the same time; the sentence loops
+  // seamlessly. Position p = entryAngle + glyphAngle keeps the reading order
+  // forwards (successive characters appear left-to-right on screen), while
+  // decreasing entryAngle reverses the rotation to right-to-left.
+  // Scroll offset decreases → glyphs stream right-to-left at the near point,
+  // entering one by one at the far point (p = 2π is the entry boundary).
+  entryAngle -= scrollSpeed * dt;
+  // Track letters that have entered the circle: glyph i is entered once its
+  // position passes the entry boundary p = 2π at the far point. glyphAngles
+  // ascend with index, so entered letters are a prefix of the queue and enter
+  // one by one in reading order. When the LAST letter enters (lettersEntered
+  // reaches the total), the stream begins repeating from the beginning: the
+  // cycle renormalizes to the text span (mod wrap), which keeps every on-circle
+  // position EXACTLY the same (verified), so the last letter stays entering at
+  // the far point and the first letter follows right behind — no empty gap.
+  if (!streamSwitched) {
+    lettersEntered = 0;
+    for (let i = 0; i < glyphAngles.length; i++) {
+      if (entryAngle + glyphAngles[i] <= Math.PI * 2) lettersEntered++;
+    }
+    if (lettersEntered === glyphAngles.length) streamSwitched = true;
+  }
+  for (let i = 0; i < textMeshes.length; i++) {
+    let p = entryAngle + glyphAngles[i];
+    if (streamSwitched) {
+      p = p % totalAngle;
+      if (p < 0) p += totalAngle;
+    }
+    const mesh = textMeshes[i];
+    // On the circle when entered (p ≤ 2π) and not yet exited (p ≥ 0).
+    if (p > Math.PI * 2 || p < 0) { mesh.visible = false; continue; }
+    mesh.position.set(
+      -textRadius * Math.sin(p),
+      0,
+      -textRadius * Math.cos(p)
+    );
+    mesh.visible = true;
+    // Tangent-aligned: glyph baseline (+X, its reading direction) along the
+    // direction of travel, glyphs upright (world Y up), readable face (local
+    // -Z) outward from the circle center.
+    // Travel direction = d(pos)/dp = (-cos p, 0, sin p).
+    dir.set(-Math.cos(p), 0, Math.sin(p));
+    crossZ.crossVectors(dir, upVec);
+    tangentMat.makeBasis(dir, upVec, crossZ);
+    mesh.quaternion.setFromRotationMatrix(tangentMat);
+  }
+
+  // Center title "Cyberlabs": rotates around Y in the opposite direction of
+  // the scroll (scroll's effective rotation around Y is negative, so the
+  // title rotates with positive angular velocity). Slowly.
+  centerGroup.rotation.y += 0.12 * dt;
+
+  // The two rings around the title rotate at their own distinct speeds
+  // (ring 1: x and y axes, ring 2: x and z axes).
+  ringGroup1.rotation.x += 0.70 * dt;
+  ringGroup1.rotation.y += 0.30 * dt;
+  ringGroup1.rotation.z += 0.40 * dt;
+  ringGroup2.rotation.x += 0.50 * dt;
+  ringGroup2.rotation.y += 0.60 * dt;
+  ringGroup2.rotation.z += 0.20 * dt;
+
+  // Rapid, uneven glow flicker: multi-frequency oscillation + per-frame jitter
+  // drives the shared ring material's emissive intensity, so both rings' band
+  // glow flickers at the same irregular, rapid rate (flicker rate 3x:
+  // sine frequencies 47/79 → 141/237 rad/s).
+  ringFlickerT += dt;
+  const flicker = 0.35
+    + 0.25 * Math.sin(ringFlickerT * 141.0)
+    + 0.18 * Math.sin(ringFlickerT * 237.0 + 1.7)
+    + 0.16 * Math.random();
+  ringMat.emissiveIntensity = Math.max(0.04, flicker);
+
+  // Keep the key light behind the camera as the user orbits, so it keeps
+  // affecting all cubes in view (light sits behind camera, slightly above).
+  camera.getWorldDirection(camDir);
+  keyLight.position.copy(camera.position).addScaledVector(camDir, -4);
+  keyLight.position.y += 2.5;
+
+  // Dedicated shine light in front of the center title, so the chrome letters
+  // get strong front highlights (the key light behind the camera alone leaves
+  // the title's sides dark).
+  centerShineLight.position.set(0, 4, 8);
+
+  controls.update();
+  // Selective bloom render: darken all non-bloom meshes, render the bloom
+  // composer (rings glow), restore materials, then render the final composer
+  // (scene + bloom composited, tone-mapped via OutputPass).
+  scene.traverse(darkenNonBloomed);
+  bloomComposer.render();
+  scene.traverse(restoreBloomMaterials);
+  finalComposer.render();
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  bloomComposer.setSize(window.innerWidth, window.innerHeight);
+  finalComposer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
