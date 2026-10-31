@@ -1,6 +1,8 @@
 # AI Demo Scene demo generation
 Experiment generating Demo Scene demos using AI vibe coding
 
+**Live site (GitHub Pages):** [https://gljubojevic.github.io/ai-demo-test/](https://gljubojevic.github.io/ai-demo-test/)
+
 ## Example 1 — Three.js 3D vibe demo
 
 A single-file browser demo built iteratively with AI vibe coding, implemented in [`example1.html`](example1.html). Open it directly in any modern browser (no build step, no server needed — it loads Three.js 0.160.0 from a CDN via an ES module import map).
